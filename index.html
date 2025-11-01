@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Music Table Processor</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
+    
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    
+    <style>
+        :root {
+            --primary-bg: #f0f2f5;
+            --secondary-bg: #ffffff;
+            --header-bg: #2c3e50;
+            --header-text: #ecf0f1;
+            --button-bg: #3498db;
+            --button-hover-bg: #2980b9;
+            --play-button-bg: #2ecc71;
+            --play-button-hover-bg: #27ae60;
+            --border-color: #d1d5db;
+            --table-border: #e0e0e0;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: var(--primary-bg);
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            overflow: hidden;
+        }
+        
+        body.is-resizing, body.is-resizing * {
+            user-select: none;
+            cursor: col-resize !important;
+        }
+
+        .ribbon {
+            background-color: var(--header-bg);
+            color: var(--header-text);
+            padding: 10px 20px;
+            display: flex;
+            align-items: center;
+            flex-shrink: 0;
+        }
+        .ribbon-button {
+            background-color: var(--button-bg);
+            color: var(--header-text);
+            border: none;
+            padding: 8px 15px;
+            margin-right: 10px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            transition: background-color 0.2s ease;
+        }
+        .ribbon-button:hover { background-color: var(--button-hover-bg); }
+        #play-button { background-color: var(--play-button-bg); }
+        #play-button:hover { background-color: var(--play-button-hover-bg); }
+        
+        .main-container {
+            display: flex;
+            flex-grow: 1;
+            padding: 15px;
+            gap: 0;
+            overflow: hidden;
+        }
+
+        .column {
+            background-color: var(--secondary-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            min-width: 100px;
+        }
+        
+        #left-column { flex: 1 1 50%; }
+        #right-column { flex: 1 1 50%; }
+
+        .column-header {
+            padding: 10px 15px;
+            font-weight: 600;
+            background-color: var(--primary-bg);
+            border-bottom: 1px solid var(--border-color);
+            color: #333;
+        }
+        
+        .resizer {
+            flex: 0 0 10px;
+            cursor: col-resize;
+            background-color: transparent;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .resizer::before {
+            content: '';
+            width: 4px;
+            height: 40px;
+            background-color: var(--border-color);
+            border-radius: 2px;
+            transition: background-color 0.2s;
+        }
+        .resizer:hover::before, body.is-resizing .resizer::before {
+            background-color: var(--button-bg);
+        }
+
+        .content-window {
+            padding: 15px;
+            height: 100%;
+            overflow: auto;
+            line-height: 1.5;
+        }
+        
+        #processed-content, #json-output {
+             font-family: 'Courier New', Courier, monospace;
+             font-size: 14px;
+             white-space: pre;
+             color: #444;
+             overflow: auto;
+        }
+
+        #file-input { display: none; }
+    </style>
+</head>
+<body>
+    
+    <header class="ribbon">
+        <button id="open-file-button" class="ribbon-button">
+            <i class="fa-solid fa-folder-open"></i>
+            Open File
+        </button>
+        <button id="play-button" class="ribbon-button">
+            <i class="fa-solid fa-play"></i>
+            Process
+        </button>
+        <button id="export-button" class="ribbon-button">
+            <i class="fa-solid fa-file-export"></i>
+            Export JSON
+        </button>
+        <button id="copy-button" class="ribbon-button">
+            <i class="fa-solid fa-copy"></i>
+            Copy
+        </button>
+        <input type="file" id="file-input" accept=".csv, .xlsx, .xls">
+    </header>
+
+    <main class="main-container" id="main-container">
+        <section class="column" id="left-column">
+            <div class="column-header">Loaded File Status</div>
+            <div id="processed-content" class="content-window">
+                Click "Open File" to load your CSV or Excel data.
+            </div>
+        </section>
+        
+        <div class="resizer" id="drag-handle"></div>
+
+        <section class="column" id="right-column">
+            <div class="column-header">Generated JSON</div>
+            <div id="json-output" class="content-window">
+                Your generated JSON will appear here after you click "Process".
+            </div>
+        </section>
+    </main>
+
+    <script>
+    // === WRAPPER ADDED HERE ===
+    // Wait for the entire HTML document to be loaded before running any script
+    document.addEventListener('DOMContentLoaded', function() {
+
+        // --- App State ---
+        let rawExcelData = [];
+
+        // --- DOM Elements ---
+        const openFileButton = document.getElementById('open-file-button');
+        const fileInput = document.getElementById('file-input');
+        const playButton = document.getElementById('play-button');
+        const exportButton = document.getElementById('export-button');
+        const copyButton = document.getElementById('copy-button');
+        const processedContentDiv = document.getElementById('processed-content');
+        const jsonOutputDiv = document.getElementById('json-output');
+        
+        // Resizer elements (moved to top for organization)
+        const resizer = document.getElementById('drag-handle');
+        const leftColumn = document.getElementById('left-column');
+        const rightColumn = document.getElementById('right-column');
+        const container = document.getElementById('main-container');
+        
+        // --- Event Listeners ---
+        openFileButton.addEventListener('click', () => fileInput.click());
+        
+        fileInput.addEventListener('change', (event) => {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                try {
+                    const fileData = e.target.result;
+                    const workbook = XLSX.read(fileData, { type: 'array' });
+                    
+                    const worksheet = workbook.Sheets[workbook.SheetNames[0]];
+                    rawExcelData = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: "" });
+                    
+                    processedContentDiv.textContent = `File loaded: ${file.name}\n${rawExcelData.length} rows found.\n\nReady to process. Click the "Process" button.`;
+                    jsonOutputDiv.textContent = 'JSON will appear here.';
+                } catch (error) {
+                    processedContentDiv.textContent = `Error processing file: ${error.message}`;
+                    console.error("File processing error:", error);
+                }
+            };
+            reader.onerror = () => processedContentDiv.textContent = 'Error reading file.';
+            
+            reader.readAsArrayBuffer(file);
+            fileInput.value = '';
+        });
+
+        playButton.addEventListener('click', () => {
+            if (rawExcelData.length === 0) {
+                alert('Please open a file first.');
+                return;
+            }
+            try {
+                const processedStrings = processDataForJson(rawExcelData);
+                const jsonString = convertToJsonString(processedStrings);
+                jsonOutputDiv.textContent = jsonString;
+            } catch (error) {
+                jsonOutputDiv.textContent = `Error during processing:\n${error.message}`;
+                console.error("Processing error:", error);
+            }
+        });
+
+        exportButton.addEventListener('click', () => {
+            const jsonContent = jsonOutputDiv.textContent;
+            
+            if (!jsonContent || jsonContent === 'JSON will appear here.' || jsonContent === 'Your generated JSON will appear here after you click "Process".') {
+                alert('Please process a file first to generate JSON.');
+                return;
+            }
+
+            const filename = 'converted_lyrics.json';
+            const blob = new Blob([jsonContent], { type: 'application/json;charset=utf-8' });
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(blob);
+            link.download = filename;
+            
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            
+            URL.revokeObjectURL(link.href);
+        });
+
+        copyButton.addEventListener('click', () => {
+            const jsonContent = jsonOutputDiv.textContent;
+            
+            if (!jsonContent || jsonContent === 'JSON will appear here.' || jsonContent === 'Your generated JSON will appear here after you click "Process".') {
+                alert('There is no JSON to copy. Please process a file first.');
+                return;
+            }
+
+            navigator.clipboard.writeText(jsonContent).then(() => {
+                const originalHTML = copyButton.innerHTML;
+                copyButton.innerHTML = '<i class="fa-solid fa-check"></i> Copied!';
+                setTimeout(() => {
+                    copyButton.innerHTML = originalHTML;
+                }, 2000);
+            }).catch(err => {
+                console.error('Failed to copy text: ', err);
+                alert('Failed to copy text. See console for details.');
+            });
+        });
+
+
+        // --- Core Logic Functions ---
+
+        function isJunk(value) {
+            const str = String(value || '').trim();
+            if (str === '') return true;
+            if (str === '~') return true;
+            if (str === '-') return true;
+            
+            const timestampRegex = /^\d{1,2}:\d{2}-\d{1,2}:\d{2}(;\s*\d{1,2}:\d{2}-\d{1,2}:\d{2})*$/;
+            if (timestampRegex.test(str)) return true;
+            
+            return false;
+        }
+
+        function processDataForJson(rawData) {
+            let data = JSON.parse(JSON.stringify(rawData));
+            data = data.slice(10);
+
+            if (data.length > 0) {
+                let numCols = data.reduce((max, row) => Math.max(max, row.length), 0);
+                let colsToKeep = [];
+                for (let c = 0; c < numCols; c++) {
+                    if (data.some(row => row[c] && String(row[c]).trim() !== '')) {
+                        colsToKeep.push(c);
+                    }
+                }
+                data = data.map(row => colsToKeep.map(colIndex => row[colIndex] || ''));
+            }
+
+            if (data.length > 0) {
+                let numCols = data.length > 0 ? data[0].length : 0;
+                let colsToKeep = [];
+                for (let c = 0; c < numCols; c++) {
+                    if (data.some(row => !isJunk(row[c]))) {
+                        colsToKeep.push(c);
+                    }
+                }
+                data = data.map(row => colsToKeep.map(colIndex => row[colIndex] || ''));
+            }
+
+            data = data.filter(row => {
+                return row.some(cell => cell && String(cell).trim() !== '');
+            });
+
+            const finalContentRows = [];
+            let prefix = '';
+            const verseRegex = /^\s*Verse\s*(\d+)\s*$/i;
+            const chorusRegex = /^\s*Chorus\s*$/i;
+
+            for (const row of data) {
+                const firstCell = String(row[0] || '').trim();
+                const verseMatch = firstCell.match(verseRegex);
+                const chorusMatch = firstCell.match(chorusRegex);
+
+                if ((verseMatch || chorusMatch) && row.slice(1).every(c => String(c || '').trim() === '')) {
+                    if (verseMatch) {
+                        prefix = `${verseMatch[1]}: `;
+                    } else if (chorusMatch) {
+                        prefix = 'Ch: ';
+                    }
+                } else {
+                    const nonEmptyCells = row.map(c => String(c || '').trim()).filter(c => c !== '');
+                    let rowString = nonEmptyCells.join('|');
+
+                    if (rowString) {
+                        rowString = prefix + rowString;
+                        finalContentRows.push(rowString);
+                    }
+                    prefix = '';
+                }
+            }
+            
+            return finalContentRows;
+        }
+
+        function convertToJsonString(stringArray) {
+            if (stringArray.length === 0) {
+                return "";
+            }
+
+            const lines = [];
+            for (let i = 0; i < stringArray.length; i++) {
+                const line = stringArray[i];
+                const escapedLine = line.replace(/"/g, '\\"');
+                
+                if (i === stringArray.length - 1) {
+                    lines.push(`"${escapedLine}"`);
+                } else {
+                    lines.push(`"${escapedLine}",`);
+                }
+            }
+            
+            return lines.join('\n');
+        }
+
+
+        // --- UI Resizer Logic ---
+        resizer.addEventListener('mousedown', function(e) {
+            e.preventDefault();
+            document.body.classList.add('is-resizing');
+
+            const doDrag = function(e) {
+                const containerRect = container.getBoundingClientRect();
+                const mouseOffset = e.clientX - containerRect.left;
+                const leftWidthPercent = (mouseOffset / containerRect.width) * 100;
+                
+                const minWidthPx = 100;
+                const minWidthPercent = (minWidthPx / containerRect.width) * 100;
+                
+                if (leftWidthPercent < minWidthPercent) {
+                    leftColumn.style.flex = `${minWidthPercent}% 1 0`;
+                    rightColumn.style.flex = `${100 - minWidthPercent}% 1 0`;
+                } else if (leftWidthPercent > (100 - minWidthPercent)) {
+                    leftColumn.style.flex = `${100 - minWidthPercent}% 1 0`;
+                    rightColumn.style.flex = `${minWidthPercent}% 1 0`;
+                } else {
+                    leftColumn.style.flex = `${leftWidthPercent}% 1 0`;
+                    rightColumn.style.flex = `${100 - leftWidthPercent}% 1 0`;
+                }
+            };
+
+            const stopDrag = function() {
+                document.body.classList.remove('is-resizing');
+                document.removeEventListener('mousemove', doDrag);
+                document.removeEventListener('mouseup', stopDrag);
+            };
+
+            document.addEventListener('mousemove', doDrag);
+            document.addEventListener('mouseup', stopDrag);
+        });
+
+    }); // </script>
+
+</body>
+</html>
